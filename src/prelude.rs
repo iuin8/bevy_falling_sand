@@ -48,8 +48,8 @@ pub use crate::physics::{
     DouglasPeuckerEpsilon, DynamicRigidBodyProxy, FallingSandPhysicsPlugin, ParticleCollider,
     ParticleColliderBuilder, ParticleColliderOptions, ParticleColliderRestingOptions,
     PromoteDynamicRigidBodyParticle, RestConversionType, RigidBodyParticleOccupancy,
-    StaticMeshUpdateInterval, StaticRigidBodyParticle, StaticRigidBodyParticleCollider,
-    SuspendedParticle,
+    StaticColliderCellSize, StaticMeshUpdateInterval, StaticRigidBodyParticle,
+    StaticRigidBodyParticleCollider, SuspendedParticle,
 };
 
 #[cfg(feature = "persistence")]

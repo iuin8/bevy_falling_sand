@@ -55,7 +55,7 @@ use bevy::prelude::*;
 
 pub use dynamic::{DynamicRigidBodyProxy, PromoteDynamicRigidBodyParticle, SuspendedParticle};
 pub use particle_colliders::*;
-pub use static_mesh::{DouglasPeuckerEpsilon, StaticMeshUpdateInterval};
+pub use static_mesh::{DouglasPeuckerEpsilon, StaticColliderCellSize, StaticMeshUpdateInterval};
 
 use dynamic::DynamicPlugin;
 use dynamic::{promote_dynamic_rigid_bodies, rejoin_dynamic_rigid_bodies};

@@ -31,6 +31,7 @@ impl Plugin for StaticPlugin {
             .init_resource::<PreviousFrameDirtyChunks>()
             .init_resource::<DouglasPeuckerEpsilon>()
             .init_resource::<StaticMeshUpdateInterval>()
+            .init_resource::<StaticColliderCellSize>()
             .init_resource::<ChunkLastProcessedTime>()
             .init_resource::<PendingMeshTasks>()
             .init_resource::<ChunkOccupancy>();
@@ -120,6 +121,32 @@ impl Default for StaticMeshUpdateInterval {
     }
 }
 
+/// World units per grid cell for generated static colliders.
+///
+/// Colliders are generated from the particle grid, whose coordinates are in cell units
+/// (1 cell = 1 unit). Hosts that render and simulate at 1 cell = N world units (e.g.
+/// half-resolution grids upscaled for display) must set this to N so that generated
+/// colliders align with rigid bodies living in world units.
+///
+/// # Examples
+///
+/// ```no_run
+/// use bevy::prelude::*;
+/// use bevy_falling_sand::physics::StaticColliderCellSize;
+///
+/// fn setup(mut commands: Commands) {
+///     commands.insert_resource(StaticColliderCellSize(3.0));
+/// }
+/// ```
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct StaticColliderCellSize(pub f32);
+
+impl Default for StaticColliderCellSize {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
 #[derive(Resource, Default, Debug)]
 pub(super) struct PreviousFrameDirtyChunks(HashSet<ChunkCoord>);
 
@@ -163,6 +190,7 @@ pub(super) fn calculate_static_rigid_bodies(
     mut occupancy: ResMut<ChunkOccupancy>,
     douglas_peucker_epsilon: Res<DouglasPeuckerEpsilon>,
     dirty_chunk_interval: Res<StaticMeshUpdateInterval>,
+    cell_size: Res<StaticColliderCellSize>,
     time: Res<Time>,
     map: Res<ParticleMap>,
     chunk_index: Res<ChunkIndex>,
@@ -289,6 +317,11 @@ pub(super) fn calculate_static_rigid_bodies(
                         (result.vertices.clone(), result.indices.clone()),
                     );
 
+                    if cell_size.0 != 1.0 {
+                        for vertex in &mut merged_verts {
+                            *vertex *= cell_size.0;
+                        }
+                    }
                     let collider = Collider::trimesh(merged_verts, merged_indices);
                     if let Some(&existing) = colliders.0.get(&result.chunk_coord) {
                         commands.entity(existing).insert(collider);
