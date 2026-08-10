@@ -173,6 +173,14 @@ pub(super) struct ChunkOccupancy {
     bitmaps: HashMap<ChunkCoord, Vec<bool>>,
 }
 
+/// calculate_static_rigid_bodies 的配置资源(SystemParam 收编:函数参数 arity 上限治理)。
+#[derive(bevy::ecs::system::SystemParam)]
+pub(super) struct StaticMeshConfig<'w> {
+    douglas_peucker_epsilon: Res<'w, DouglasPeuckerEpsilon>,
+    dirty_chunk_interval: Res<'w, StaticMeshUpdateInterval>,
+    cell_size: Res<'w, StaticColliderCellSize>,
+}
+
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -188,9 +196,7 @@ pub(super) fn calculate_static_rigid_bodies(
     mut mesh_data: ResMut<StaticRigidBodyParticleMeshData>,
     mut colliders: ResMut<StaticRigidBodyParticleColliders>,
     mut occupancy: ResMut<ChunkOccupancy>,
-    douglas_peucker_epsilon: Res<DouglasPeuckerEpsilon>,
-    dirty_chunk_interval: Res<StaticMeshUpdateInterval>,
-    cell_size: Res<StaticColliderCellSize>,
+    config: StaticMeshConfig,
     time: Res<Time>,
     map: Res<ParticleMap>,
     chunk_index: Res<ChunkIndex>,
@@ -198,7 +204,7 @@ pub(super) fn calculate_static_rigid_bodies(
     moved_particle_query: Query<(), Changed<GridPosition>>,
 ) {
     let current_time = time.elapsed_secs();
-    let update_interval = dirty_chunk_interval.0;
+    let update_interval = config.dirty_chunk_interval.0;
     let chunk_size = chunk_index.chunk_size() as usize;
     let bitmap_len = chunk_size * chunk_size;
 
@@ -238,7 +244,7 @@ pub(super) fn calculate_static_rigid_bodies(
 
     if !chunks_to_process.is_empty() {
         let task_pool = AsyncComputeTaskPool::get();
-        let epsilon = douglas_peucker_epsilon.0;
+        let epsilon = config.douglas_peucker_epsilon.0;
 
         for coord in &chunks_to_process {
             if pending_tasks.tasks.contains_key(coord) {
@@ -317,9 +323,9 @@ pub(super) fn calculate_static_rigid_bodies(
                         (result.vertices.clone(), result.indices.clone()),
                     );
 
-                    if cell_size.0 != 1.0 {
+                    if config.cell_size.0 != 1.0 {
                         for vertex in &mut merged_verts {
-                            *vertex *= cell_size.0;
+                            *vertex *= config.cell_size.0;
                         }
                     }
                     let collider = Collider::trimesh(merged_verts, merged_indices);
