@@ -227,10 +227,11 @@ pub enum ContactOutcome {
     Becomes(ParticleTypeId),
 }
 
-/// Optional burst spawned when a contact rule fires: up to `count` extra particles
-/// of `particle` type are spawned into empty cells of the Moore neighborhood around
-/// the source particle (e.g. a raindrop impact throwing several splash droplets
-/// instead of a single 1:1 replacement).
+/// Optional burst spawned when a contact rule fires.
+///
+/// Up to `count` extra particles of `particle` type are spawned into empty cells of the
+/// Moore neighborhood around the source particle (e.g. a raindrop impact throwing several
+/// splash droplets instead of a single 1:1 replacement).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
 #[type_path = "bfs_reactions::contact"]
 pub struct ContactBurst {

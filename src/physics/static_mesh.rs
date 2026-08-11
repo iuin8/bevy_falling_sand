@@ -173,7 +173,7 @@ pub(super) struct ChunkOccupancy {
     bitmaps: HashMap<ChunkCoord, Vec<bool>>,
 }
 
-/// calculate_static_rigid_bodies 的配置资源(SystemParam 收编:函数参数 arity 上限治理)。
+/// `calculate_static_rigid_bodies` 的配置资源(SystemParam 收编:函数参数 arity 上限治理)。
 #[derive(bevy::ecs::system::SystemParam)]
 pub(super) struct StaticMeshConfig<'w> {
     douglas_peucker_epsilon: Res<'w, DouglasPeuckerEpsilon>,
