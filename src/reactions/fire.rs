@@ -477,6 +477,10 @@ fn handle_fire(
     burns_query: Query<&Flammable, (With<Particle>, Without<Burning>)>,
     mut rng: Single<&mut bevy_rand::prelude::WyRand, With<bevy_rand::prelude::GlobalRng>>,
 ) {
+    // 无 Fire 粒子时整系统短路(archetype 级 O(1)),避免白扫 dirty 粒子。
+    if fire_query.is_empty() {
+        return;
+    }
     particle_chunks.for_each_dirty_particle(|map, dirty_state, pos, entity| {
         let Ok(fire) = fire_query.get(entity) else {
             return;

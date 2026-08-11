@@ -94,6 +94,10 @@ fn handle_corrosion(
     corrodible: Query<&Corrodible>,
     mut rng: Single<&mut WyRand, With<GlobalRng>>,
 ) {
+    // 无 Corrosive 粒子时整系统短路(archetype 级 O(1)),避免白扫 dirty 粒子。
+    if corrosive.is_empty() {
+        return;
+    }
     particle_chunks.for_each_dirty_particle(|map, dirty_state, pos, entity| {
         let Ok((corrosive, _)) = corrosive.get_mut(entity) else {
             return;

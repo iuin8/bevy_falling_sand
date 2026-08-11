@@ -377,6 +377,11 @@ fn handle_contact_reactions(
     mut msgw_spawn: MessageWriter<SpawnParticleSignal>,
     mut msgw_despawn: MessageWriter<DespawnParticleSignal>,
 ) {
+    // 无任何注册了接触规则的粒子类型时整系统短路:否则 dirty 粒子扫描本身
+    // 就是每帧的固定开销(稳态剖析实测 ~700 样本,无规则包纯属白扫)。
+    if rules_query.is_empty() {
+        return;
+    }
     particle_chunks.for_each_dirty_particle(|map, dirty_state, pos, entity| {
         let Ok(attached) = particle_query.get(entity) else {
             return;
