@@ -39,8 +39,8 @@ pub use crate::debug::{
 
 #[cfg(feature = "reactions")]
 pub use crate::reactions::{
-    BurnProduct, Burning, ContactOutcome, ContactReaction, ContactRule, Corrodible, Corrosive,
-    FallingSandReactionsPlugin, Fire, Flammable, ReactionRng,
+    BurnProduct, Burning, ContactBurst, ContactOutcome, ContactReaction, ContactRule, Corrodible,
+    Corrosive, FallingSandReactionsPlugin, Fire, Flammable, ReactionRng,
 };
 
 #[cfg(feature = "physics")]

@@ -17,6 +17,7 @@ impl Plugin for ContactPlugin {
         app.register_type::<ContactReaction>()
             .register_type::<ContactRule>()
             .register_type::<ContactOutcome>()
+            .register_type::<ContactBurst>()
             .add_observer(on_contact_reaction_added)
             .add_observer(on_particle_type_added)
             .add_systems(
@@ -63,6 +64,7 @@ impl Plugin for ContactPlugin {
 ///                 target_outcome: ContactOutcome::Unchanged,
 ///                 chance: 0.8,
 ///                 radius: 1.0,
+///                 ..default()
 ///         }]),
 ///     ));
 /// }
@@ -183,6 +185,7 @@ impl<'a> IntoIterator for &'a mut ContactReaction {
 ///     target_outcome: ContactOutcome::Becomes(fire),
 ///     chance: 0.5,
 ///     radius: 1.0,
+///     ..Default::default()
 /// };
 /// assert_eq!(rule.chance, 0.5);
 /// assert_eq!(rule.target_outcome, ContactOutcome::Becomes(fire));
@@ -205,6 +208,11 @@ pub struct ContactRule {
     /// Defaults to 1.0 (immediate neighbors).
     #[serde(default = "ContactRule::default_radius")]
     pub radius: f32,
+    /// Optional burst of extra particles spawned around the source when this rule
+    /// fires (splash spray etc.). `None` = classic 1:1 replacement only.
+    #[serde(default)]
+    #[reflect(default)]
+    pub burst: Option<ContactBurst>,
 }
 
 /// Describes what happens to one participant when a contact reaction fires.
@@ -219,6 +227,20 @@ pub enum ContactOutcome {
     Becomes(ParticleTypeId),
 }
 
+/// Optional burst spawned when a contact rule fires: up to `count` extra particles
+/// of `particle` type are spawned into empty cells of the Moore neighborhood around
+/// the source particle (e.g. a raindrop impact throwing several splash droplets
+/// instead of a single 1:1 replacement).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
+#[type_path = "bfs_reactions::contact"]
+pub struct ContactBurst {
+    /// Particle type spawned by the burst.
+    pub particle: ParticleTypeId,
+    /// Maximum number of particles spawned per firing. The actual number is capped
+    /// by the empty cells available in the source's neighborhood (at most 8).
+    pub count: u8,
+}
+
 impl Default for ContactRule {
     fn default() -> Self {
         Self {
@@ -227,6 +249,7 @@ impl Default for ContactRule {
             target_outcome: ContactOutcome::default(),
             chance: 0.0,
             radius: 1.0,
+            burst: None,
         }
     }
 }
@@ -251,6 +274,7 @@ pub(super) struct ResolvedContactRule {
     pub(crate) target_outcome: ContactOutcome,
     pub(crate) chance: f64,
     pub(crate) radius: f32,
+    pub(crate) burst: Option<ContactBurst>,
 }
 
 /// Resolves `ContactReaction` type IDs into `ResolvedContactReaction` entity references
@@ -304,12 +328,16 @@ fn try_resolve(
                 let _ = registry.get(particle_type)?;
             }
         }
+        if let Some(burst) = &rule.burst {
+            let _ = registry.get(burst.particle)?;
+        }
         resolved_rules.push(ResolvedContactRule {
             target_type,
             source_outcome: rule.source_outcome,
             target_outcome: rule.target_outcome,
             chance: rule.chance,
             radius: rule.radius,
+            burst: rule.burst,
         });
     }
 
@@ -389,6 +417,30 @@ fn handle_contact_reactions(
                             &mut msgw_spawn,
                             &mut msgw_despawn,
                         );
+                        if let Some(burst) = rule.burst {
+                            let mut neighborhood = [
+                                pos + IVec2::new(-1, -1),
+                                pos + IVec2::new(0, -1),
+                                pos + IVec2::new(1, -1),
+                                pos + IVec2::new(-1, 0),
+                                pos + IVec2::new(1, 0),
+                                pos + IVec2::new(-1, 1),
+                                pos + IVec2::new(0, 1),
+                                pos + IVec2::new(1, 1),
+                            ];
+                            rng.shuffle(&mut neighborhood);
+                            let mut remaining = burst.count;
+                            for burst_pos in neighborhood {
+                                if remaining == 0 {
+                                    break;
+                                }
+                                if matches!(map.get(burst_pos), Ok(None)) {
+                                    msgw_spawn
+                                        .write(SpawnParticleSignal::new(burst.particle, burst_pos));
+                                    remaining -= 1;
+                                }
+                            }
+                        }
                         reacted = true;
                         break;
                     }
