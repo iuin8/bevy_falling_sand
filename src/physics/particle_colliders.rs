@@ -13,7 +13,7 @@
 //!   sleep once their velocities remain below configured thresholds.
 
 use avian2d::prelude::{
-    AngularVelocity, ColliderAabb, LinearVelocity, RigidBody, Sleeping, SpatialQuery,
+    AngularVelocity, Collider, ColliderAabb, LinearVelocity, RigidBody, Sleeping, SpatialQuery,
     SpatialQueryFilter,
 };
 use bevy::platform::collections::{HashMap, HashSet};
@@ -26,12 +26,27 @@ const DEFAULT_REST_LINEAR_THRESHOLD: f32 = 1.5;
 const DEFAULT_REST_ANGULAR_THRESHOLD: f32 = 1.5;
 const DEFAULT_REST_TIME: f32 = 0.50;
 
+/// World units per grid cell for rigid-body occupancy scans.
+///
+/// Runtimes that simulate the particle grid at reduced resolution (1 cell = N world units)
+/// must insert this resource so occupancy rebuilds, dirty-rect expansion and physics shape
+/// queries line up with the particle grid. Defaults to 1.0 (one world unit per cell).
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct ParticleColliderCellSize(pub f32);
+
+impl Default for ParticleColliderCellSize {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
 pub(super) struct RigidBodiesPlugin;
 
 impl Plugin for RigidBodiesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ParticleColliderRestTimers>()
             .init_resource::<RigidBodyParticleOccupancy>()
+            .init_resource::<ParticleColliderCellSize>()
             .add_systems(
                 PostUpdate,
                 (
@@ -509,23 +524,36 @@ impl RigidBodyParticleOccupancy {
     }
 }
 
+/// Converts a world-space collider AABB into the particle-grid rectangle it overlaps
+/// (1 cell = `cell_size` world units; inclusive max, same semantics as the unscaled path).
+fn world_aabb_to_grid_rect(aabb: &ColliderAabb, cell_size: f32) -> IRect {
+    IRect::new(
+        (aabb.min.x / cell_size).floor() as i32,
+        (aabb.min.y / cell_size).floor() as i32,
+        (aabb.max.x / cell_size).ceil() as i32,
+        (aabb.max.y / cell_size).ceil() as i32,
+    )
+}
+
+/// World-space center of a particle-grid cell (1 cell = `cell_size` world units).
+fn grid_cell_center_world(position: IVec2, cell_size: f32) -> Vec2 {
+    (position.as_vec2() + Vec2::splat(0.5)) * cell_size
+}
+
 #[allow(clippy::needless_pass_by_value)]
 fn expand_dirty_rects_for_active_bodies(
     bodies: Query<(&ColliderAabb, &RigidBody), (With<ParticleCollider>, Without<Sleeping>)>,
     chunk_index: Res<ChunkIndex>,
+    cell_size: Res<ParticleColliderCellSize>,
     mut chunk_query: Query<(&ChunkRegion, &mut ChunkDirtyState)>,
 ) {
+    let cs = cell_size.0.max(1e-6);
     for (aabb, body) in &bodies {
         if !body.is_dynamic() || !aabb.min.is_finite() || !aabb.max.is_finite() {
             continue;
         }
 
-        let body_rect = IRect::new(
-            aabb.min.x.floor() as i32,
-            aabb.min.y.floor() as i32,
-            aabb.max.x.ceil() as i32,
-            aabb.max.y.ceil() as i32,
-        );
+        let body_rect = world_aabb_to_grid_rect(aabb, cs);
 
         let min_coord = chunk_index.world_to_chunk_coord(body_rect.min);
         let max_coord = chunk_index.world_to_chunk_coord(body_rect.max);
@@ -625,6 +653,7 @@ fn update_rigid_body_particle_occupancy(
     mut occupancy: ResMut<RigidBodyParticleOccupancy>,
     spatial_query: SpatialQuery,
     chunk_index: Res<ChunkIndex>,
+    cell_size: Res<ParticleColliderCellSize>,
     chunk_query: Query<&ChunkDirtyState>,
     bodies: Query<
         (
@@ -637,6 +666,7 @@ fn update_rigid_body_particle_occupancy(
     >,
 ) {
     occupancy.set_chunk_layout(chunk_index.chunk_size() as usize);
+    let cs = cell_size.0.max(1e-6);
 
     let mut rebuild_chunks = HashSet::<ChunkCoord>::default();
 
@@ -687,12 +717,7 @@ fn update_rigid_body_particle_occupancy(
             continue;
         }
 
-        let body_rect = IRect::new(
-            aabb.min.x.floor() as i32,
-            aabb.min.y.floor() as i32,
-            aabb.max.x.ceil() as i32,
-            aabb.max.y.ceil() as i32,
-        );
+        let body_rect = world_aabb_to_grid_rect(aabb, cs);
         let min_coord = chunk_index.world_to_chunk_coord(body_rect.min);
         let max_coord = chunk_index.world_to_chunk_coord(body_rect.max);
 
@@ -715,6 +740,7 @@ fn update_rigid_body_particle_occupancy(
                         scan_rect,
                         &collider.cells,
                         transform,
+                        cs,
                     );
                 } else if fallback_colliders.contains(&entity) {
                     scan_occupied_cells(
@@ -724,6 +750,7 @@ fn update_rigid_body_particle_occupancy(
                         &spatial_query,
                         &filter,
                         &fallback_colliders,
+                        cs,
                     );
                 }
             }
@@ -737,6 +764,7 @@ fn scan_cached_collider_cells(
     scan_rect: IRect,
     collider_cells: &ParticleColliderCells,
     transform: &GlobalTransform,
+    cell_size: f32,
 ) {
     let inverse_transform = transform.affine().inverse();
 
@@ -747,8 +775,10 @@ fn scan_cached_collider_cells(
                 continue;
             }
 
-            let world_center = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, 0.0);
-            let local_center = inverse_transform.transform_point3(world_center).truncate();
+            let center = grid_cell_center_world(position, cell_size);
+            let local_center = inverse_transform
+                .transform_point3(center.extend(0.0))
+                .truncate();
             if collider_cells.contains_local_point(local_center) {
                 occupancy.insert(coord, position);
             }
@@ -763,7 +793,12 @@ fn scan_occupied_cells(
     spatial_query: &SpatialQuery,
     filter: &SpatialQueryFilter,
     colliders: &HashSet<Entity>,
+    cell_size: f32,
 ) {
+    // 粗粒度 cell 用盒体重叠查询而不是中心点采样:小 collider 可能完全偏离
+    // cell 中心,点采样会漏检导致粒子穿刚体(cell_size=1 时两者等价)。
+    let cell_shape = Collider::rectangle(cell_size, cell_size);
+
     for y in scan_rect.min.y..=scan_rect.max.y {
         for x in scan_rect.min.x..=scan_rect.max.x {
             let position = IVec2::new(x, y);
@@ -771,9 +806,9 @@ fn scan_occupied_cells(
                 continue;
             }
 
-            let center = position.as_vec2() + Vec2::splat(0.5);
+            let center = grid_cell_center_world(position, cell_size);
             if spatial_query
-                .point_intersections(center, filter)
+                .shape_intersections(&cell_shape, center, 0.0, filter)
                 .iter()
                 .any(|entity| colliders.contains(entity))
             {
@@ -843,5 +878,61 @@ mod tests {
             collider.resting.rest_type,
             RestConversionType::Sleep
         ));
+    }
+
+    #[test]
+    fn cell_size_defaults_to_one_world_unit() {
+        assert_eq!(ParticleColliderCellSize::default().0, 1.0);
+    }
+
+    #[test]
+    fn world_aabb_to_grid_rect_scales_by_cell_size() {
+        let aabb = ColliderAabb::new(Vec2::new(9.0, 9.0), Vec2::splat(4.5));
+
+        // cell_size=1:与旧的 1:1 公式逐值一致
+        let unscaled = world_aabb_to_grid_rect(&aabb, 1.0);
+        assert_eq!(unscaled, IRect::new(4, 4, 14, 14));
+
+        // cell_size=3:世界 4.5..13.5 → 网格 1..4(含 inclusive 上沿)
+        let scaled = world_aabb_to_grid_rect(&aabb, 3.0);
+        assert_eq!(scaled, IRect::new(1, 1, 5, 5));
+    }
+
+    #[test]
+    fn grid_cell_center_world_scales() {
+        assert_eq!(
+            grid_cell_center_world(IVec2::new(2, 5), 1.0),
+            Vec2::new(2.5, 5.5),
+            "cell_size=1 必须保持原采样点"
+        );
+        assert_eq!(
+            grid_cell_center_world(IVec2::new(2, 5), 3.0),
+            Vec2::new(7.5, 16.5),
+            "cell (2,5) 覆盖世界 6..9 × 15..18,中心 (7.5,16.5)"
+        );
+    }
+
+    #[test]
+    fn cached_scan_uses_scaled_cell_centers() {
+        let mut occupancy = RigidBodyParticleOccupancy::default();
+        occupancy.set_chunk_layout(64);
+
+        // 本地 cell (1,1):世界点 (1.5,1.5) 命中(恒等变换 + 零平移)
+        let cells = ParticleColliderCells::new([IVec2::new(1, 1)], Vec2::ZERO);
+        let transform = GlobalTransform::IDENTITY;
+        let scan_rect = IRect::new(0, 0, 3, 3);
+        let coord = ChunkCoord::new(0, 0);
+
+        // cell_size=1:网格 cell (1,1) 中心 (1.5,1.5) → 命中
+        scan_cached_collider_cells(&mut occupancy, coord, scan_rect, &cells, &transform, 1.0);
+        assert!(occupancy.contains_in_chunk(coord, IVec2::new(1, 1)));
+
+        // cell_size=3:网格 cell (0,0) 中心 (1.5,1.5) → 同样命中本地 cell (1,1)
+        let mut occupancy = RigidBodyParticleOccupancy::default();
+        occupancy.set_chunk_layout(64);
+        scan_cached_collider_cells(&mut occupancy, coord, scan_rect, &cells, &transform, 3.0);
+        assert!(occupancy.contains_in_chunk(coord, IVec2::new(0, 0)));
+        // 而 1:1 语义下的 cell (1,1) 中心 (4.5,4.5) → 本地 cell (4,4) 不在缓存 → 不命中
+        assert!(!occupancy.contains_in_chunk(coord, IVec2::new(1, 1)));
     }
 }
