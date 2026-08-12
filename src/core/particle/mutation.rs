@@ -19,6 +19,7 @@ impl Plugin for MutationPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<ChanceMutation>()
             .register_type::<TimedMutation>()
+            .register_type::<DirtyOnMutation>()
             .register_particle_sync_component::<ChanceMutation>()
             .register_particle_sync_component::<TimedMutation>()
             .add_systems(
@@ -28,6 +29,22 @@ impl Plugin for MutationPlugin {
             );
     }
 }
+
+/// Marks a particle type whose in-place mutations must dirty their chunk.
+///
+/// In-place mutation (no positional signal) is invisible to chunk-based consumers such as the
+/// static mesh colliders and dirty-rect rendering unless the chunk is marked dirty. Dirtying on
+/// every mutation is wasteful for high-frequency reactions between mobile types (e.g.
+/// raindrop→water contact reactions dirty the same chunks every frame), so only types carrying
+/// this marker trigger the dirty mark. Typical carriers: static collider types whose settled
+/// cells never move (settled snow→water would otherwise leave stale colliders behind).
+///
+/// Attach it to the [`ParticleType`](crate::core::ParticleType) entity; a mutation dirties its
+/// chunk when either the source or the target type carries the marker.
+#[derive(Component, Clone, Copy, Default, Debug, Reflect)]
+#[reflect(Component)]
+#[type_path = "bfs_core::particle"]
+pub struct DirtyOnMutation;
 
 /// Mutates a particle into another particle type after a specified duration of particle
 /// simulation.
@@ -130,6 +147,7 @@ impl ChanceMutation {
 fn handle_chance_mutations(
     mut query: Query<(&mut AttachedToParticleType, &mut ChanceMutation, &GridPosition), With<Particle>>,
     registry: Res<ParticleTypeRegistry>,
+    dirty_flags: Query<(), With<DirtyOnMutation>>,
     mut rng: Single<&mut WyRand, With<GlobalRng>>,
     time: Res<Time>,
     chunk_index: Res<ChunkIndex>,
@@ -141,8 +159,11 @@ fn handle_chance_mutations(
             && let Some(&new_parent) = registry.get(mutation.target)
             && attached.0 != new_parent
         {
+            let old_parent = attached.0;
             attached.0 = new_parent;
-            mark_chunk_dirty(position.0, &chunk_index, &mut chunk_query);
+            if dirty_flags.contains(old_parent) || dirty_flags.contains(new_parent) {
+                mark_chunk_dirty(position.0, &chunk_index, &mut chunk_query);
+            }
         }
     }
 }
@@ -151,6 +172,7 @@ fn handle_chance_mutations(
 fn handle_timed_mutations(
     mut query: Query<(&mut AttachedToParticleType, &mut TimedMutation, &GridPosition), With<Particle>>,
     registry: Res<ParticleTypeRegistry>,
+    dirty_flags: Query<(), With<DirtyOnMutation>>,
     time: Res<Time>,
     chunk_index: Res<ChunkIndex>,
     mut chunk_query: Query<&mut ChunkDirtyState>,
@@ -160,14 +182,19 @@ fn handle_timed_mutations(
             && let Some(&new_parent) = registry.get(mutation.target)
             && attached.0 != new_parent
         {
+            let old_parent = attached.0;
             attached.0 = new_parent;
-            mark_chunk_dirty(position.0, &chunk_index, &mut chunk_query);
+            if dirty_flags.contains(old_parent) || dirty_flags.contains(new_parent) {
+                mark_chunk_dirty(position.0, &chunk_index, &mut chunk_query);
+            }
         }
     }
 }
 
 /// 原位转类后标脏所在 chunk:静态网格/渲染只按脏标记重建,不标脏会让
 /// "落定雪→水"这类相变把静态细胞残留在 collider 里(消融后假地形不消)。
+/// 仅当源/目标类型携带 [`DirtyOnMutation`] 时由调用方触发——高频 contact
+/// 反应(雨滴→水)的双方都无静态碰撞,标脏只会让静态网格每拍重建(chunk churn)。
 fn mark_chunk_dirty(
     position: IVec2,
     chunk_index: &ChunkIndex,
@@ -315,7 +342,8 @@ mod tests {
     #[test]
     fn mutation_marks_chunk_dirty() {
         let mut app = create_test_app();
-        app.world_mut().spawn(ParticleType::from_id(sand()));
+        app.world_mut()
+            .spawn((ParticleType::from_id(sand()), DirtyOnMutation));
         app.world_mut().spawn(ParticleType::from_id(water()));
         // chunk 实体由 ChunkLoader 驱动生成;无 loader 时标脏静默无操作
         app.world_mut()
@@ -347,7 +375,46 @@ mod tests {
             .entity(chunk_entity)
             .get::<ChunkDirtyState>()
             .unwrap();
-        assert!(dirty.is_dirty(), "原位相变必须标脏所在 chunk(静态网格/渲染重建依赖)");
+        assert!(dirty.is_dirty(), "带 DirtyOnMutation 的类型原位相变必须标脏所在 chunk(静态网格/渲染重建依赖)");
+    }
+
+    #[test]
+    fn mutation_without_flag_skips_dirty() {
+        let mut app = create_test_app();
+        app.world_mut().spawn(ParticleType::from_id(sand()));
+        app.world_mut().spawn(ParticleType::from_id(water()));
+        app.world_mut()
+            .spawn((ChunkLoader, Transform::default(), GlobalTransform::default()));
+        app.update();
+
+        let particle = spawn_particle(&mut app, sand());
+        app.world_mut()
+            .entity_mut(particle)
+            .insert(ChanceMutation::new(water(), 1.0));
+
+        let chunk_entity = {
+            let index = app.world().resource::<ChunkIndex>();
+            let coord = index.world_to_chunk_coord(IVec2::ZERO);
+            index.get(coord).expect("chunk 已加载")
+        };
+        app.world_mut()
+            .entity_mut(chunk_entity)
+            .get_mut::<ChunkDirtyState>()
+            .unwrap()
+            .clear();
+
+        app.update();
+        app.update();
+
+        let dirty = app
+            .world()
+            .entity(chunk_entity)
+            .get::<ChunkDirtyState>()
+            .unwrap();
+        assert!(
+            !dirty.is_dirty(),
+            "无 DirtyOnMutation 的类型原位相变不得标脏(高频 contact 反应的 chunk churn 防线)"
+        );
     }
 
     #[test]
