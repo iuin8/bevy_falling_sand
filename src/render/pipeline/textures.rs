@@ -717,7 +717,9 @@ fn setup_world_textures(
         TextureFormat::Rgba8Unorm,
         default(),
     );
-    color_image.sampler = ImageSampler::nearest();
+    // [petagent] linear 采样:CA 纹理是 Rgba8 实际颜色(非索引),双线性插值让
+    // scale>1 放大后的细胞硬边方块变柔和渐变(像素化视觉治理);nearest 下方块感过重。
+    color_image.sampler = ImageSampler::linear();
     color_image.texture_descriptor.usage =
         TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
     let color_handle = images.add(color_image);
