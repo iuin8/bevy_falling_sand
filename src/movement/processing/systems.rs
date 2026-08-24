@@ -1,5 +1,6 @@
 use crate::movement::{
-    AirResistance, Density, Momentum, Movement, MovementRng, ParticleResistor, Speed,
+    AirResistance, Density, LateralFriction, Momentum, Movement, MovementRng, ParticleResistor,
+    Speed,
 };
 #[cfg(feature = "physics")]
 use crate::prelude::RigidBodyParticleOccupancy;
@@ -59,6 +60,7 @@ type ParticleMovementByChunksQuery<'a> = (
     &'a Movement,
     &'a AirResistance,
     Option<&'a ParticleResistor>,
+    Option<&'a LateralFriction>,
 );
 
 type ParticleMovementByParticlesQuery<'a> = (
@@ -70,6 +72,7 @@ type ParticleMovementByParticlesQuery<'a> = (
     &'a Movement,
     &'a AirResistance,
     Option<&'a ParticleResistor>,
+    Option<&'a LateralFriction>,
 );
 
 #[allow(unused_mut, clippy::too_many_lines)]
@@ -186,6 +189,7 @@ pub(super) fn par_handle_movement_by_chunks(
                                 movement_priority,
                                 air_resistance,
                                 _resistor,
+                                lateral_friction,
                             )) = (*query_ptr_copy.get()).get_unchecked(entity)
                             {
                                 if speed.current() == 0 {
@@ -198,10 +202,31 @@ pub(super) fn par_handle_movement_by_chunks(
                                 'speed_loop: for _ in 0..speed.current() {
                                     let momentum_ref = momentum.as_deref().copied();
 
+                                    // [petagent] 侧向摩擦:支撑细胞(正下格被占)的纯水平候选
+                                    // 按概率跳过——融水在平面顶带动量无限滑行("像没摩擦力")
+                                    // 的修复。本步内 position 不变,支撑判定每步一次。
+                                    let dampen_lateral = match lateral_friction {
+                                        Some(f) if f.0 > 0.0 => {
+                                            (*map_ptr_copy.get())
+                                                .get_copied(position.0 + IVec2::new(0, -1))
+                                                .ok()
+                                                .flatten()
+                                                .is_some()
+                                                && rng.chance(f.0)
+                                        }
+                                        _ => false,
+                                    };
+
                                     for (tier, relative_position) in movement_priority
                                         .iter_candidates(&mut rng, momentum_ref.as_ref())
                                         .map(|(tier, pos)| (tier, *pos))
                                     {
+                                        if dampen_lateral
+                                            && relative_position.y == 0
+                                            && relative_position.x != 0
+                                        {
+                                            continue;
+                                        }
                                         let neighbor_position = position.0 + relative_position;
                                         let obstruct_idx = get_direction_index(relative_position);
 
@@ -250,6 +275,7 @@ pub(super) fn par_handle_movement_by_chunks(
                                                 _,
                                                 _,
                                                 neighbor_resistor,
+                                                _,
                                             )) = (*query_ptr_copy.get())
                                                 .get_unchecked(neighbor_entity)
                                             {
@@ -432,6 +458,7 @@ pub(super) fn serial_handle_movement_by_chunks(
                     movement_priority,
                     air_resistance,
                     _resistor,
+                    lateral_friction,
                 )) = particle_query.get_unchecked(entity)
                 {
                     if speed.current() == 0 {
@@ -444,10 +471,30 @@ pub(super) fn serial_handle_movement_by_chunks(
                     'speed_loop: for _ in 0..speed.current() {
                         let momentum_ref = momentum.as_deref().copied();
 
+                        // [petagent] 侧向摩擦:支撑细胞(正下格被占)的纯水平候选按概率
+                        // 跳过——融水在平面顶带动量无限滑行的修复。本步内 position 不变。
+                        let dampen_lateral = match lateral_friction {
+                            Some(f) if f.0 > 0.0 => {
+                                map.get_copied(position.0 + IVec2::new(0, -1))
+                                    .ok()
+                                    .flatten()
+                                    .is_some()
+                                    && rng.chance(f.0)
+                            }
+                            _ => false,
+                        };
+
                         for (tier, relative_position) in movement_priority
                             .iter_candidates(&mut rng, momentum_ref.as_ref())
                             .map(|(tier, pos)| (tier, *pos))
                         {
+                            if dampen_lateral
+                                && relative_position.y == 0
+                                && relative_position.x != 0
+                            {
+                                continue;
+                            }
+
                             let neighbor_position = position.0 + relative_position;
                             let obstruct_idx = get_direction_index(relative_position);
 
@@ -495,6 +542,7 @@ pub(super) fn serial_handle_movement_by_chunks(
                                     _,
                                     _,
                                     neighbor_resistor,
+                                    _,
                                 )) = particle_query.get_unchecked(neighbor_entity)
                                 {
                                     if let Some(resistor) = neighbor_resistor
@@ -601,6 +649,7 @@ pub(super) fn handle_movement_by_particles(
                 movement_priority,
                 air_resistance,
                 _resistor,
+                lateral_friction,
             )| {
                 if speed.current() == 0 {
                     speed.set_speed(1);
@@ -631,10 +680,27 @@ pub(super) fn handle_movement_by_particles(
                 'speed_loop: for _ in 0..speed.current() {
                     let momentum_ref = momentum.as_deref().copied();
 
+                    // [petagent] 侧向摩擦:支撑细胞(正下格被占)的纯水平候选按概率
+                    // 跳过——融水在平面顶带动量无限滑行的修复。本步内 position 不变。
+                    let dampen_lateral = match lateral_friction {
+                        Some(f) if f.0 > 0.0 => {
+                            map.get_copied(position.0 + IVec2::new(0, -1))
+                                .ok()
+                                .flatten()
+                                .is_some()
+                                && rng.chance(f.0)
+                        }
+                        _ => false,
+                    };
+
                     for (tier, relative_position) in movement_priority
                         .iter_candidates(&mut rng, momentum_ref.as_ref())
                         .map(|(tier, pos)| (tier, *pos))
                     {
+                        if dampen_lateral && relative_position.y == 0 && relative_position.x != 0 {
+                            continue;
+                        }
+
                         let neighbor_position = position.0 + relative_position;
                         let obstruct_idx = get_direction_index(relative_position);
 
@@ -685,6 +751,7 @@ pub(super) fn handle_movement_by_particles(
                                 _,
                                 _,
                                 neighbor_resistor,
+                                _,
                             )) = particle_query.get_unchecked(neighbor_entity)
                             {
                                 if let Some(resistor) = neighbor_resistor

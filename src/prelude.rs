@@ -26,8 +26,9 @@ pub use crate::render::{
 #[cfg(feature = "movement")]
 pub use crate::movement::{
     AirResistance, ChunkIterationState, Density, DespawnDynamicParticlesSignal,
-    DespawnStaticParticlesSignal, FallingSandMovementPlugin, Momentum, Movement, MovementRng,
-    MovementSystemState, NeighborGroup, ParticleMovementSystems, ParticleResistor, Speed,
+    DespawnStaticParticlesSignal, FallingSandMovementPlugin, LateralFriction, Momentum, Movement,
+    MovementRng, MovementSystemState, NeighborGroup, ParticleMovementSystems, ParticleResistor,
+    Speed,
 };
 
 #[cfg(feature = "debug")]

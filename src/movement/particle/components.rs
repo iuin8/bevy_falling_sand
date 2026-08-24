@@ -20,6 +20,7 @@ impl Plugin for ComponentsPlugin {
             .register_particle_sync_component::<Speed>()
             .register_particle_sync_component::<Momentum>()
             .register_particle_sync_component::<ParticleResistor>()
+            .register_particle_sync_component::<LateralFriction>()
             .register_particle_sync_component::<AirResistance>()
             .register_particle_sync_component::<Movement>()
             .register_type::<MovementRng>()
@@ -29,7 +30,8 @@ impl Plugin for ComponentsPlugin {
             .register_type::<NeighborGroup>()
             .register_type::<AirResistance>()
             .register_type::<Movement>()
-            .register_type::<ParticleResistor>();
+            .register_type::<ParticleResistor>()
+            .register_type::<LateralFriction>();
     }
 }
 
@@ -314,6 +316,27 @@ impl From<Momentum> for IVec2 {
 #[reflect(Component)]
 #[type_path = "bfs_movement::particle"]
 pub struct ParticleResistor(pub f64);
+
+/// [petagent] Lateral friction for a particle resting on support: probabilistically skips
+/// purely-horizontal movement candidates while the cell directly below is occupied.
+/// A value of 0.0 disables friction; 1.0 fully prevents lateral sliding when supported.
+///
+/// Rationale: without it, a fluid on a flat surface glides sideways forever — momentum makes
+/// the same lateral candidate the single pick each tick and nothing dissipates it (observed
+/// as melt water racing along window tops, "like there's no friction").
+///
+/// # Examples
+///
+/// ```no_run
+/// use bevy_falling_sand::movement::LateralFriction;
+///
+/// let f = LateralFriction(0.9);
+/// assert_eq!(f.0, 0.9);
+/// ```
+#[derive(Component, Copy, Clone, Default, PartialEq, Debug, Reflect, Serialize, Deserialize)]
+#[reflect(Component)]
+#[type_path = "bfs_movement::particle"]
+pub struct LateralFriction(pub f64);
 
 /// Defines an ordered group of relative neighbor positions used to evaluate
 /// particle movement within a single priority tier.
